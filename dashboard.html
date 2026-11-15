@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Order Dashboard{% endblock %}
+{% block content %}
+<main class="dashboard">
+  <div class="dash-head">
+    <div><div class="eyebrow">ERIN’S POKE BOWLS</div><h1>Order dashboard</h1></div>
+    <div class="dash-actions"><a class="button" href="{{ url_for('orders_csv') }}">Download CSV</a><form method="post" action="{{ url_for('dashboard_logout') }}"><button class="ghost">Log out</button></form></div>
+  </div>
+
+  <section>
+    <h2>Active orders</h2>
+    {% if not active %}<p class="muted">No active orders.</p>{% endif %}
+    {% for o in active %}
+    <article class="order-card">
+      <div class="order-top"><div><b>#{{ o.id }} · {{ o.customer_name }}</b><span>{{ o.created_at }}</span></div><div class="status {{ 'paid' if o.paid else 'unpaid' }}">{{ 'PAID' if o.paid else 'UNPAID' }}</div></div>
+      <div class="order-body">
+        <div><ul>{% for i in o.items %}<li>{{ i.quantity }} × {{ i.name }} — ${{ '%.2f'|format(i.line_total) }}</li>{% endfor %}</ul><p><b>Total:</b> ${{ '%.2f'|format(o.total) }}</p></div>
+        <div class="contact"><b>{{ o.phone }}</b>{% if o.notes %}<p><b>Notes:</b> {{ o.notes }}</p>{% endif %}</div>
+      </div>
+      <div class="order-actions">
+        <form method="post" action="{{ url_for('toggle_paid', order_id=o.id) }}"><button>{{ 'Mark unpaid' if o.paid else 'Mark paid' }}</button></form>
+        <form method="post" action="{{ url_for('complete_order', order_id=o.id) }}"><button>Move to completed</button></form>
+      </div>
+    </article>
+    {% endfor %}
+  </section>
+
+  <section>
+    <h2>Past orders</h2>
+    {% if not past %}<p class="muted">No completed orders yet.</p>{% endif %}
+    {% for o in past %}
+    <article class="order-card compact"><div><b>#{{ o.id }} · {{ o.customer_name }}</b><span>{{ o.created_at }}</span></div><div><span class="status {{ 'paid' if o.paid else 'unpaid' }}">{{ 'PAID' if o.paid else 'UNPAID' }}</span> · ${{ '%.2f'|format(o.total) }}</div></article>
+    {% endfor %}
+  </section>
+
+  <section>
+    <h2>Poké Bowl Test feedback</h2>
+    {% if not feedback %}<p class="muted">No feedback yet.</p>{% endif %}
+    {% for f in feedback %}
+    <article class="feedback-card"><b>{{ f.name or 'Anonymous' }}</b><span>{{ f.created_at }}</span><p>Rating: {{ f.rating or '—' }}</p><p>Favorite: {{ f.favorite or '—' }}</p><p>{{ f.comments or '—' }}</p></article>
+    {% endfor %}
+  </section>
+</main>
+{% endblock %}

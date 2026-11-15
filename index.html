@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Erin’s Poke Bowls | Order Online{% endblock %}
+{% block content %}
+<main class="page">
+  <section class="hero">
+    <div>
+      <div class="eyebrow">POKÉ BOWL PLATES</div>
+      <h1>Order your bowl.</h1>
+      <p>Choose your protein. Every bowl comes with all the fixings.</p>
+      <p class="delivery">Need delivery? <a href="tel:9123270026">Text Erin: 912-327-0026</a></p>
+    </div>
+  </section>
+
+  <form id="orderForm" class="order-layout">
+    <div class="menu-column">
+      {% for key, group in menu.items() %}
+      <section class="menu-section">
+        <div class="section-heading">
+          <div>
+            <h2>{{ group.title }}</h2>
+            <p>{{ group.subtitle }}</p>
+          </div>
+        </div>
+        <div class="included"><strong>Included in every bowl</strong><br>{{ group.included }}</div>
+        <div class="choices">
+          {% for item in group.items %}
+          <label class="choice">
+            <input type="radio" name="{{ key }}" value="{{ item.id }}" data-price="{{ item.price }}" data-name="{{ item.name }}">
+            <span class="choice-copy"><b>{{ item.name }}</b><span>${{ item.price }}</span></span>
+          </label>
+          {% endfor %}
+        </div>
+      </section>
+      {% endfor %}
+
+      <section class="details card">
+        <h2>Your details</h2>
+        <label>Name<input required id="name" placeholder="First and last name"></label>
+        <label>Phone number<input required id="phone" type="tel" placeholder="(555) 555-5555"></label>
+        <label>Order notes (optional)<textarea id="notes" rows="4"></textarea></label>
+      </section>
+
+      <section class="payment card">
+        <h2>Payment options</h2>
+        <div class="pay-row"><b>Cash App</b><span>$ErinASayer</span></div>
+        <div class="pay-row"><b>Venmo</b><span>@ErinASayer</span></div>
+        <div class="pay-row"><b>Apple Cash</b><span>(912) 327-0026</span></div>
+        <div class="pay-row"><b>Cash</b><span>Accepted</span></div>
+        <p>Payment is arranged directly with Erin; this form does not collect it.</p>
+      </section>
+
+      <button class="submit" type="submit">Place order</button>
+      <p class="delivery bottom">Text Erin for delivery: <a href="tel:9123270026">912-327-0026</a></p>
+    </div>
+
+    <aside class="summary card">
+      <div class="eyebrow">YOUR ORDER</div>
+      <h2>A little of everything<br>you love.</h2>
+      <div id="summaryItems" class="summary-items"><p class="muted">Choose a bowl to begin.</p></div>
+      <div class="total"><span>Total</span><strong id="total">$0.00</strong></div>
+      <div class="quantity-row">
+        <span>Quantity for selected bowl</span>
+        <input id="quantity" type="number" min="1" value="1">
+      </div>
+      <div id="success" class="success" hidden></div>
+    </aside>
+  </form>
+
+  <div class="feedback-link"><a href="{{ url_for('feedback') }}">Poké Bowl Test feedback</a></div>
+</main>
+
+<script>
+const state = { items: [] };
+const radios = document.querySelectorAll('input[type=radio][data-price]');
+const qty = document.getElementById('quantity');
+const summary = document.getElementById('summaryItems');
+const totalEl = document.getElementById('total');
+
+function selectedItems() {
+  const out = [];
+  document.querySelectorAll('input[type=radio]:checked').forEach(r => {
+    out.push({id:r.value, name:r.dataset.name, price:Number(r.dataset.price), quantity:1});
+  });
+  return out;
+}
+function render() {
+  const items = selectedItems();
+  const q = Math.max(1, Number(qty.value || 1));
+  let total = 0;
+  summary.innerHTML = '';
+  if (!items.length) {
+    summary.innerHTML = '<p class="muted">Choose a bowl to begin.</p>';
+  } else {
+    items.forEach(x => {
+      x.quantity = q;
+      total += x.price * q;
+      const div = document.createElement('div');
+      div.className = 'summary-item';
+      div.innerHTML = `<span>${q} × ${x.name}</span><b>$${(x.price*q).toFixed(2)}</b>`;
+      summary.appendChild(div);
+    });
+  }
+  totalEl.textContent = `$${total.toFixed(2)}`;
+}
+radios.forEach(r => r.addEventListener('change', render));
+qty.addEventListener('input', render);
+document.getElementById('orderForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const items = selectedItems().map(x => ({...x, quantity: Math.max(1, Number(qty.value || 1))}));
+  if (!items.length) return alert('Choose a bowl first.');
+  const body = {name:document.getElementById('name').value, phone:document.getElementById('phone').value, notes:document.getElementById('notes').value, items};
+  const res = await fetch('/order', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  const data = await res.json();
+  if (!data.ok) return alert(data.error || 'Could not save the order.');
+  const success = document.getElementById('success');
+  success.hidden = false;
+  success.textContent = `Order #${data.order_id} saved. Total: $${Number(data.total).toFixed(2)}. Text Erin at 912-327-0026 for delivery.`;
+  window.scrollTo({top:0, behavior:'smooth'});
+});
+render();
+</script>
+{% endblock %}

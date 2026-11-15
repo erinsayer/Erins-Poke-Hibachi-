@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Poké Bowl Test Feedback{% endblock %}
+{% block content %}
+<main class="narrow">
+  <section class="card">
+    <div class="eyebrow">POKÉ BOWL TEST</div>
+    <h1>Tell us what you think.</h1>
+    <form method="post" class="feedback-form">
+      <label>Name (optional)<input name="name"></label>
+      <label>How would you rate it?
+        <select name="rating"><option value="">Choose one</option><option>5 — Excellent</option><option>4 — Good</option><option>3 — Okay</option><option>2 — Needs work</option><option>1 — Not for me</option></select>
+      </label>
+      <label>What was your favorite? <input name="favorite"></label>
+      <label>Comments<textarea name="comments" rows="5"></textarea></label>
+      <button class="submit" type="submit">Send feedback</button>
+    </form>
+  </section>
+</main>
+{% endblock %}
