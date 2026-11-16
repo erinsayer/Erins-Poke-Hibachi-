@@ -3,7 +3,9 @@ import os
 import csv
 import io
 import json
-import sqlite3
+import psycopg2
+from psycopg2.extras import DictCursor
+from contextlib import contextmanager
 import secrets
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -17,7 +19,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
-DB_PATH = os.environ.get("DATABASE_PATH", "orders.db")
+DATABASE_URL = os.environ["DATABASE_URL"]
 PHONE = "(912) 327-0026"
 
 PAYMENTS = {
@@ -66,16 +68,35 @@ def service_dates():
         "Poké Thursdays": next_day(3)
     }
 
+class Database:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def execute(self, sql, params=()):
+        cursor = self.conn.cursor(cursor_factory=DictCursor)
+        cursor.execute(sql.replace("?", "%s"), params)
+        return cursor
+
+@contextmanager
 def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    conn = psycopg2.connect(
+        DATABASE_URL,
+        sslmode="require"
+    )
+    try:
+        yield Database(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 def init_db():
     with db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS weekly_orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 name TEXT,
                 phone TEXT,
                 details TEXT,
@@ -91,7 +112,7 @@ def init_db():
         """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS weekly_feedback (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,,
                 name TEXT,
                 message TEXT,
                 created TEXT
