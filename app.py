@@ -112,7 +112,7 @@ def init_db():
         """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS weekly_feedback (
-                id SERIAL PRIMARY KEY,,
+                id SERIAL PRIMARY KEY,
                 name TEXT,
                 message TEXT,
                 created TEXT
