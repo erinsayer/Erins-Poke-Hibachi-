@@ -260,7 +260,7 @@ BASE = """
 <div>Hibachi Tuesdays • Poké Thursdays</div>
 </header>
 <main class="container">
-""" 
+"""
 
 FOOTER = """
 </main>
@@ -282,7 +282,12 @@ def page(content, **kwargs):
 
 HOME = """
 <div class="intro">
+{% if manual %}
+<h2>Add Manual Order</h2>
+<a href="/dashboard">Back to Dashboard</a>
+{% else %}
 <h2>Your weekly bowl fix</h2>
+{% endif %}
 <p>Two days. Two menus. Something delicious
 to look forward to.</p>
 <p class="muted">
@@ -290,7 +295,13 @@ Preorder your bowls below for the designated day.
 </p>
 </div>
 
-<form method="POST" action="/order" id="orderForm">
+<form method="POST"
+action="{{ '/dashboard/add' if manual else '/order' }}"
+id="orderForm">
+
+{% if manual %}
+<input type="hidden" name="csrf" value="{{ csrf }}">
+{% endif %}
 
 {% for category, items in menu.items() %}
 {% set category_index = loop.index0 %}
@@ -308,6 +319,13 @@ Preorder your bowls below for the designated day.
 <p class="tag">
 Next service: {{ dates[category].strftime('%B %d') }}
 </p>
+
+{% if manual %}
+<label>Service date</label>
+<input type="date"
+name="date_{{ category_index }}"
+value="{{ dates[category].isoformat() }}" required>
+{% endif %}
 
 <p>{{ descriptions[category] }}</p>
 
@@ -346,12 +364,15 @@ Next service: {{ dates[category].strftime('%B %d') }}
 {% endfor %}
 
 <section class="card">
-<h2>Your information</h2>
+<h2>{{ 'Customer information' if manual else 'Your information' }}</h2>
+
 <label>Name</label>
 <input name="name" required autocomplete="name">
 
 <label>Phone number</label>
-<input name="phone" type="tel" required autocomplete="tel">
+<input name="phone" type="tel"
+{% if not manual %}required{% endif %}
+autocomplete="tel">
 
 <label>Order notes</label>
 <textarea name="notes"
@@ -373,7 +394,9 @@ Need delivery? Please text {{ phone }}.
 Total: $<span id="total">0.00</span>
 </div>
 
-<button type="submit">Place My Order</button>
+<button type="submit">
+{{ 'Save Manual Order' if manual else 'Place My Order' }}
+</button>
 </section>
 </form>
 
@@ -416,17 +439,21 @@ def home():
         proteins=PROTEINS,
         payments=PAYMENTS,
         dates=service_dates(),
-        phone=PHONE
+        phone=PHONE,
+        manual=False
     )
 
 @app.route("/order", methods=["POST"])
 def order():
+    return save_order(manual=False)
+
+def save_order(manual=False):
     name = request.form.get("name", "").strip()
     phone = request.form.get("phone", "").strip()
     notes = request.form.get("notes", "").strip()
     payment = request.form.get("payment", "")
 
-    if not name or not phone or payment not in PAYMENTS:
+    if not name or (not manual and not phone) or payment not in PAYMENTS:
         abort(400, "Please complete your information.")
 
     dates = service_dates()
@@ -467,6 +494,23 @@ def order():
             details.append(description)
 
         if details:
+            if manual:
+                try:
+                    chosen = datetime.strptime(
+                        request.form.get(f"date_{ci}", ""),
+                        "%Y-%m-%d"
+                    ).date()
+                except ValueError:
+                    abort(400, "Please select a valid service date.")
+
+                if chosen.weekday() != (1 if ci == 0 else 3):
+                    abort(
+                        400,
+                        "Hibachi dates must be Tuesdays and Poké dates must be Thursdays."
+                    )
+
+                dates[category] = chosen
+
             groups.append({
                 "category": category,
                 "date": dates[category].isoformat(),
@@ -492,6 +536,9 @@ def order():
                 group["date"], group["category"],
                 datetime.now().isoformat()
             ))
+
+    if manual:
+        return redirect(url_for("dashboard"))
 
     session["confirmation"] = {
         "name": name,
@@ -613,10 +660,18 @@ def dashboard():
     <a href="/dashboard?day=Hibachi+Tuesdays">Hibachi</a> ·
     <a href="/dashboard?day=Poké+Thursdays">Poké</a>
     </p>
+
     <p>Orders: {{ orders|length }}</p>
     <p>Order total: ${{ "%.2f"|format(revenue) }}</p>
     <p>Collected: ${{ "%.2f"|format(paid_total) }}</p>
-    <a class="button" href="/export">Download Orders CSV</a>
+
+    <a class="button" href="/dashboard/add">
+    + Add Manual Order
+    </a>
+
+    <a class="button" href="/export">
+    Download Orders CSV
+    </a>
     </section>
 
     {% for o in orders %}
@@ -625,9 +680,11 @@ def dashboard():
     <h3>{{ o.service_date }}</h3>
     <strong>#{{ o.id }} — {{ o.name }}</strong>
     <p>{{ o.phone }}</p>
+
     {% for item in o["items"] %}
     <div>{{ item }}</div>
     {% endfor %}
+
     <p>Notes: {{ o.notes or 'None' }}</p>
     <p>{{ o.payment }} — ${{ "%.2f"|format(o.total) }}</p>
 
@@ -644,6 +701,14 @@ def dashboard():
     </button>
     </form>
     </div>
+
+    <form method="POST"
+    action="/dashboard/delete/{{ o.id }}"
+    onsubmit="return confirm('Permanently delete this order?');">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button style="background:#963b36">Delete Order</button>
+    </form>
+
     </section>
     {% else %}
     <p>No orders yet.</p>
@@ -675,6 +740,38 @@ def check_csrf():
 
     if not token or not secrets.compare_digest(token, submitted):
         abort(403)
+
+@app.route("/dashboard/add", methods=["GET", "POST"])
+@login_required
+def manual_order():
+    if request.method == "POST":
+        check_csrf()
+        return save_order(manual=True)
+
+    return page(
+        HOME,
+        manual=True,
+        csrf=session["csrf"],
+        menu=MENU,
+        descriptions=DESCRIPTIONS,
+        proteins=PROTEINS,
+        payments=PAYMENTS,
+        dates=service_dates(),
+        phone=PHONE
+    )
+
+@app.route("/dashboard/delete/<int:order_id>", methods=["POST"])
+@login_required
+def delete_order(order_id):
+    check_csrf()
+
+    with db() as conn:
+        conn.execute(
+            "DELETE FROM weekly_orders WHERE id=?",
+            (order_id,)
+        )
+
+    return redirect(url_for("dashboard"))
 
 @app.route("/toggle/<int:order_id>/<field>", methods=["POST"])
 @login_required
