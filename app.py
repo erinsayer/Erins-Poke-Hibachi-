@@ -1,20 +1,23 @@
 
 import os
-import sqlite3
-import json
 import csv
 import io
+import json
+import sqlite3
 import secrets
-import hmac
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from functools import wraps
-from flask import Flask, request, session, redirect, render_template_string, Response, abort
+from flask import (
+    Flask, request, redirect, url_for, session,
+    render_template_string, send_file, abort
+)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 
-PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
-DB = os.environ.get("DATABASE_PATH", "erin_orders_v2.db")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
+DB_PATH = os.environ.get("DATABASE_PATH", "orders.db")
 PHONE = "(912) 327-0026"
 
 PAYMENTS = {
@@ -24,788 +27,735 @@ PAYMENTS = {
     "Cash": "Pay with cash"
 }
 
-MENU = [
-    ("Poké Bowls", "Teriyaki Salmon", 16,
-     "Cooked teriyaki salmon, white rice, avocado, cucumber, edamame, carrots, crispy onions, soy sauce, eel sauce and spicy mayo."),
-    ("Poké Bowls", "Tuna", 17,
-     "Tuna, white rice, avocado, cucumber, edamame, carrots, crispy onions, soy sauce, eel sauce and spicy mayo."),
-    ("Hibachi Bowls", "Teriyaki Chicken", 15,
-     "Teriyaki chicken, fried rice, broccoli, carrots, soy sauce and white sauce."),
-    ("Hibachi Bowls", "Shrimp", 16,
-     "Shrimp, fried rice, broccoli, carrots, soy sauce and white sauce."),
-    ("Hibachi Bowls", "Teriyaki Steak", 17,
-     "Teriyaki steak, fried rice, broccoli, carrots, soy sauce and white sauce.")
-]
+MENU = {
+    "Hibachi Tuesdays": [
+        {"name": "Teriyaki Chicken", "price": 15},
+        {"name": "Shrimp", "price": 16},
+        {"name": "Teriyaki Steak", "price": 17}
+    ],
+    "Poké Thursdays": [
+        {"name": "Teriyaki Salmon (Cooked)", "price": 16},
+        {"name": "Tuna", "price": 17}
+    ]
+}
 
-PROTEINS = ["None", "Chicken", "Steak", "Shrimp", "Salmon", "Tuna"]
+DESCRIPTIONS = {
+    "Hibachi Tuesdays": (
+        "Fried rice, broccoli, carrots, soy sauce "
+        "and white sauce."
+    ),
+    "Poké Thursdays": (
+        "White rice, avocado, cucumber, edamame, "
+        "carrots, crispy onions, soy sauce, "
+        "eel sauce and spicy mayo."
+    )
+}
+
+PROTEINS = {
+    "Hibachi Tuesdays": ["Chicken", "Shrimp", "Steak"],
+    "Poké Thursdays": ["Salmon", "Tuna"]
+}
+
+def next_day(weekday):
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    return today + timedelta(days=(weekday - today.weekday()) % 7)
+
+def service_dates():
+    return {
+        "Hibachi Tuesdays": next_day(1),
+        "Poké Thursdays": next_day(3)
+    }
 
 def db():
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-with db() as conn:
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY,
-            created TEXT,
-            name TEXT,
-            phone TEXT,
-            items TEXT,
-            total INTEGER,
-            payment TEXT,
-            notes TEXT,
-            paid INTEGER DEFAULT 0,
-            completed INTEGER DEFAULT 0
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS feedback (
-            id INTEGER PRIMARY KEY,
-            created TEXT,
-            name TEXT,
-            rating TEXT,
-            message TEXT
-        )
-    """)
+def init_db():
+    with db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS weekly_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                phone TEXT,
+                details TEXT,
+                notes TEXT,
+                payment TEXT,
+                total REAL,
+                service_date TEXT,
+                menu_day TEXT,
+                paid INTEGER DEFAULT 0,
+                completed INTEGER DEFAULT 0,
+                created TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS weekly_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                message TEXT,
+                created TEXT
+            )
+        """)
 
-def csrf():
-    if "csrf" not in session:
-        session["csrf"] = secrets.token_hex(24)
-    return session["csrf"]
+init_db()
 
-app.jinja_env.globals["csrf"] = csrf
-
-@app.before_request
-def protect():
-    if request.method == "POST":
-        if not hmac.compare_digest(
-            session.get("csrf", ""),
-            request.form.get("csrf", "") or "invalid"
-        ):
-            abort(400)
+STYLE = """
+<style>
+* {box-sizing:border-box}
+body {
+    margin:0;
+    background:#f8f6f0;
+    color:#303b32;
+    font-family:Arial,sans-serif;
+    line-height:1.6;
+}
+header {
+    text-align:center;
+    background:#344b39;
+    color:#fff;
+    padding:45px 18px;
+}
+h1,h2,h3 {
+    font-family:Georgia,serif;
+    line-height:1.25;
+}
+h1 {font-size:36px;margin:8px 0}
+h2 {font-size:27px;margin:5px 0 12px}
+.eyebrow {
+    text-transform:uppercase;
+    letter-spacing:3px;
+    font-size:11px;
+    font-weight:bold;
+}
+.container {
+    max-width:780px;
+    margin:auto;
+    padding:22px 16px;
+}
+.intro {
+    text-align:center;
+    margin:8px 0 25px;
+}
+.card {
+    background:white;
+    border:1px solid #e1e3d9;
+    border-radius:18px;
+    padding:22px;
+    margin-bottom:22px;
+    box-shadow:0 4px 15px #00000006;
+}
+.hibachi {background:#f5e9db}
+.poke {background:#e6eee0}
+.item {
+    padding:17px 0;
+    border-top:1px solid #00000015;
+}
+.item-title {
+    display:flex;
+    justify-content:space-between;
+    gap:10px;
+    font-weight:bold;
+}
+label {
+    display:block;
+    font-size:14px;
+    font-weight:bold;
+    margin:12px 0 5px;
+}
+input,select,textarea {
+    width:100%;
+    padding:12px;
+    border:1px solid #d5d8cf;
+    background:white;
+    border-radius:9px;
+    font-size:16px;
+    color:#303b32;
+}
+textarea {min-height:90px}
+button,.button {
+    display:block;
+    width:100%;
+    background:#344b39;
+    color:white;
+    padding:14px;
+    border:0;
+    border-radius:10px;
+    font-size:16px;
+    font-weight:bold;
+    text-decoration:none;
+    text-align:center;
+    cursor:pointer;
+    margin-top:12px;
+}
+.total {
+    font-size:25px;
+    font-weight:bold;
+    text-align:center;
+    padding:15px;
+}
+.muted {color:#657064;font-size:14px}
+footer {
+    text-align:center;
+    padding:25px;
+    font-size:14px;
+}
+a {color:#344b39}
+.order {
+    border-top:1px solid #ddd;
+    padding:15px 0;
+}
+.tag {
+    display:inline-block;
+    padding:4px 12px;
+    background:#e6eee0;
+    border-radius:20px;
+    font-size:13px;
+}
+.actions {
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+}
+.actions form {flex:1}
+.small {font-size:13px}
+</style>
+"""
 
 BASE = """
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport"
+      content="width=device-width, initial-scale=1">
 <title>Erin’s Poké & Hibachi</title>
-<style>
-* { box-sizing: border-box; }
-
-body {
-    margin: 0;
-    background: #faf7ef;
-    color: #193e32;
-    font-family: Arial, sans-serif;
-    line-height: 1.6;
-}
-
-header {
-    background: #193e32;
-    color: #faf7ef;
-    text-align: center;
-    padding: 55px 20px 35px;
-}
-
-.brandline {
-    color: #d9c8a1;
-    font-size: 10px;
-    letter-spacing: 3px;
-    text-transform: uppercase;
-}
-
-h1, h2, h3 {
-    font-family: Georgia, serif;
-    font-weight: normal;
-    line-height: 1.2;
-}
-
-h1 {
-    font-size: clamp(42px, 8vw, 68px);
-    margin: 20px 0;
-}
-
-h2 {
-    font-size: 34px;
-    text-align: center;
-}
-
-.tagline {
-    color: #d9c8a1;
-    font-family: Georgia, serif;
-    font-style: italic;
-}
-
-nav {
-    display: flex;
-    justify-content: center;
-    gap: 25px;
-    margin-top: 28px;
-    flex-wrap: wrap;
-}
-
-nav a {
-    color: #faf7ef;
-    text-decoration: none;
-    font-size: 13px;
-}
-
-main {
-    max-width: 760px;
-    margin: auto;
-    padding: 25px 20px 50px;
-}
-
-.category {
-    color: #927b4c;
-    font-size: 12px;
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    margin-top: 35px;
-    font-weight: bold;
-}
-
-.card {
-    background: #fffdf8;
-    border: 1px solid #e4ded0;
-    border-radius: 15px;
-    padding: 22px;
-    margin-bottom: 16px;
-}
-
-.line {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 14px;
-}
-
-.line h3 {
-    font-size: 24px;
-    margin: 0;
-}
-
-.price {
-    font-weight: bold;
-    white-space: nowrap;
-}
-
-.description {
-    font-size: 14px;
-    color: #647064;
-}
-
-.fields {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-}
-
-label {
-    display: block;
-    font-size: 13px;
-    font-weight: bold;
-    margin: 12px 0;
-}
-
-input, select, textarea {
-    width: 100%;
-    padding: 13px;
-    margin-top: 7px;
-    border: 1px solid #d5d1c3;
-    background: white;
-    color: #193e32;
-    border-radius: 9px;
-    font-size: 16px;
-}
-
-button, .button {
-    display: inline-block;
-    background: #193e32;
-    color: white;
-    border: none;
-    border-radius: 9px;
-    padding: 14px 22px;
-    font-size: 15px;
-    text-decoration: none;
-    cursor: pointer;
-}
-
-.full { width: 100%; }
-
-.soft { background: #e9ede3; }
-
-.total {
-    font-size: 28px;
-    font-weight: bold;
-}
-
-.center { text-align: center; }
-
-.actions {
-    display: flex;
-    gap: 9px;
-    flex-wrap: wrap;
-}
-
-.badge {
-    background: #e9ede3;
-    border-radius: 20px;
-    padding: 6px 12px;
-    font-size: 12px;
-}
-
-footer {
-    text-align: center;
-    padding: 30px 15px;
-    border-top: 1px solid #dedacf;
-    font-size: 12px;
-}
-
-footer a { color: #193e32; }
-
-@media(max-width: 420px) {
-    .fields { grid-template-columns: 1fr; }
-    header { padding-top: 40px; }
-}
-</style>
+{{ style|safe }}
 </head>
 <body>
-
 <header>
-    <div class="brandline">
-        Fresh • Handcrafted • Made to order
-    </div>
-
-    <h1>Erin’s Poké<br>&amp; Hibachi</h1>
-
-    <div class="tagline">
-        Fresh ingredients. Bold flavors.
-    </div>
-
-    <nav>
-        <a href="/">Menu & Order</a>
-        <a href="/feedback">Feedback</a>
-        <a href="sms:9123270026">Contact</a>
-    </nav>
+<div class="eyebrow">Fresh • Homemade • Delicious</div>
+<h1>Erin’s Poké & Hibachi</h1>
+<div>Hibachi Tuesdays • Poké Thursdays</div>
 </header>
+<main class="container">
+""" 
 
-<main>
-CONTENT
+FOOTER = """
 </main>
-
 <footer>
-    Erin’s Poké & Hibachi
-    <br>
-    Freshly prepared with care.
-    <br><br>
-    <a href="/login">Owner Login</a>
+<p>Made fresh with love ♡</p>
+<a href="/">Order</a> ·
+<a href="/feedback">Feedback</a>
 </footer>
-
 </body>
 </html>
 """
 
 def page(content, **kwargs):
     return render_template_string(
-        BASE.replace("CONTENT", content), **kwargs
+        BASE + content + FOOTER,
+        style=STYLE,
+        **kwargs
     )
+
+HOME = """
+<div class="intro">
+<h2>Your weekly bowl fix</h2>
+<p>Two days. Two menus. Something delicious
+to look forward to.</p>
+<p class="muted">
+Preorder your bowls below for the designated day.
+</p>
+</div>
+
+<form method="POST" action="/order" id="orderForm">
+
+{% for category, items in menu.items() %}
+{% set category_index = loop.index0 %}
+
+<section class="card {{ 'hibachi' if loop.first else 'poke' }}">
+<div class="eyebrow">
+{{ 'Every Tuesday' if loop.first else 'Every Thursday' }}
+</div>
+
+<h2>
+{{ '🥢' if loop.first else '🥑' }}
+{{ category }}
+</h2>
+
+<p class="tag">
+Next service: {{ dates[category].strftime('%B %d') }}
+</p>
+
+<p>{{ descriptions[category] }}</p>
+
+{% for item in items %}
+{% set key = category_index|string + '_' + loop.index0|string %}
+
+<div class="item">
+<div class="item-title">
+<span>{{ item.name }}</span>
+<span>${{ item.price }}</span>
+</div>
+
+<label>Quantity</label>
+<select name="qty_{{ key }}"
+        class="quantity"
+        data-key="{{ key }}"
+        data-price="{{ item.price }}"
+        onchange="updateTotal()">
+{% for n in range(11) %}
+<option value="{{ n }}">{{ n }}</option>
+{% endfor %}
+</select>
+
+<label>Add extra protein — $5 per bowl</label>
+<select name="extra_{{ key }}"
+        id="extra_{{ key }}"
+        onchange="updateTotal()">
+<option value="">No extra protein</option>
+{% for protein in proteins[category] %}
+<option value="{{ protein }}">{{ protein }} +$5</option>
+{% endfor %}
+</select>
+</div>
+{% endfor %}
+</section>
+{% endfor %}
+
+<section class="card">
+<h2>Your information</h2>
+<label>Name</label>
+<input name="name" required autocomplete="name">
+
+<label>Phone number</label>
+<input name="phone" type="tel" required autocomplete="tel">
+
+<label>Order notes</label>
+<textarea name="notes"
+placeholder="Special instructions or requests"></textarea>
+
+<label>Payment method</label>
+<select name="payment" required>
+<option value="">Select payment method</option>
+{% for payment in payments %}
+<option>{{ payment }}</option>
+{% endfor %}
+</select>
+
+<p class="muted">
+Need delivery? Please text {{ phone }}.
+</p>
+
+<div class="total">
+Total: $<span id="total">0.00</span>
+</div>
+
+<button type="submit">Place My Order</button>
+</section>
+</form>
+
+<script>
+function updateTotal() {
+    let total = 0;
+
+    document.querySelectorAll('.quantity').forEach(function(el) {
+        let qty = Number(el.value);
+        let price = Number(el.dataset.price);
+        let extra = document.getElementById(
+            'extra_' + el.dataset.key
+        ).value;
+
+        total += qty * (price + (extra ? 5 : 0));
+    });
+
+    document.getElementById('total').textContent =
+        total.toFixed(2);
+
+    return total;
+}
+
+document.getElementById('orderForm')
+.addEventListener('submit', function(e) {
+    if (updateTotal() <= 0) {
+        e.preventDefault();
+        alert('Please select at least one bowl.');
+    }
+});
+</script>
+"""
 
 @app.route("/")
 def home():
-    return page("""
-    <h2>The Menu</h2>
-
-    <p class="center description">
-        Choose your favorite bowl and make it your own.
-    </p>
-
-    <form method="post" action="/order">
-    <input type="hidden" name="csrf" value="{{csrf()}}">
-
-    {% for category, name, price, description in menu %}
-
-    {% if loop.first or category != menu[loop.index0-1][0] %}
-        <div class="category">{{category}}</div>
-    {% endif %}
-
-    <div class="card bowl">
-
-        <div class="line">
-            <h3>{{name}}</h3>
-            <span class="price">${{price}}.00</span>
-        </div>
-
-        <p class="description">{{description}}</p>
-
-        <div class="fields">
-            <label>
-                Quantity
-                <select class="qty"
-                    name="qty{{loop.index0}}"
-                    data-price="{{price}}">
-                    {% for n in range(11) %}
-                        <option>{{n}}</option>
-                    {% endfor %}
-                </select>
-            </label>
-
-            <label>
-                Extra protein (+$5 per bowl)
-                <select class="extra"
-                    name="extra{{loop.index0}}">
-                    {% for protein in proteins %}
-                        <option>{{protein}}</option>
-                    {% endfor %}
-                </select>
-            </label>
-        </div>
-    </div>
-
-    {% endfor %}
-
-    <div class="card soft">
-        <h3>A little extra</h3>
-        <p>Add an extra protein to any bowl for just $5.</p>
-        <hr>
-        <div class="line">
-            <strong>Order Total</strong>
-            <span id="total" class="total">$0.00</span>
-        </div>
-    </div>
-
-    <h2>Your Details</h2>
-
-    <div class="card">
-        <label>
-            Full Name
-            <input name="name" required maxlength="100">
-        </label>
-
-        <label>
-            Phone Number
-            <input name="phone" type="tel" required maxlength="40">
-        </label>
-
-        <label>
-            Payment Method
-            <select name="payment" required>
-                {% for payment in payments %}
-                    <option>{{payment}}</option>
-                {% endfor %}
-            </select>
-        </label>
-
-        <label>
-            Special Requests
-            <textarea name="notes" rows="3"
-                maxlength="1000"
-                placeholder="Anything we should know?"></textarea>
-        </label>
-
-        <p class="description">
-            For delivery, please text (912) 327-0026.
-            Payments are made separately.
-        </p>
-
-        <button class="full">Place My Order</button>
-    </div>
-    </form>
-
-    <script>
-    function updateTotal() {
-        let total = 0;
-
-        document.querySelectorAll(".bowl").forEach(bowl => {
-            let qty = bowl.querySelector(".qty");
-            let extra = bowl.querySelector(".extra");
-
-            let price = Number(qty.dataset.price);
-            let quantity = Number(qty.value);
-
-            if (extra.value !== "None") {
-                price += 5;
-            }
-
-            total += price * quantity;
-        });
-
-        document.getElementById("total").textContent =
-            "$" + total.toFixed(2);
-    }
-
-    document.querySelectorAll("select").forEach(select => {
-        select.addEventListener("change", updateTotal);
-    });
-
-    updateTotal();
-    </script>
-    """, menu=MENU, proteins=PROTEINS, payments=PAYMENTS)
+    return page(
+        HOME,
+        menu=MENU,
+        descriptions=DESCRIPTIONS,
+        proteins=PROTEINS,
+        payments=PAYMENTS,
+        dates=service_dates(),
+        phone=PHONE
+    )
 
 @app.route("/order", methods=["POST"])
 def order():
-    items = []
-    total = 0
-
-    for i, (_, name, price, _) in enumerate(MENU):
-        try:
-            qty = int(request.form.get(f"qty{i}", "0"))
-        except ValueError:
-            abort(400)
-
-        extra = request.form.get(f"extra{i}", "None")
-
-        if not 0 <= qty <= 10 or extra not in PROTEINS:
-            abort(400)
-
-        if qty > 0:
-            subtotal = qty * (price + (5 if extra != "None" else 0))
-            total += subtotal
-
-            items.append({
-                "name": name,
-                "qty": qty,
-                "extra": extra,
-                "subtotal": subtotal * 100
-            })
-
-    name = request.form.get("name", "").strip()[:100]
-    phone = request.form.get("phone", "").strip()[:40]
+    name = request.form.get("name", "").strip()
+    phone = request.form.get("phone", "").strip()
+    notes = request.form.get("notes", "").strip()
     payment = request.form.get("payment", "")
-    notes = request.form.get("notes", "")[:1000]
 
-    if not items or not name or not phone or payment not in PAYMENTS:
-        return page("""
-            <h2>Please check your order</h2>
-            <p>Select at least one bowl and complete your details.</p>
-            <a class="button" href="/">Back to Menu</a>
-        """), 400
+    if not name or not phone or payment not in PAYMENTS:
+        abort(400, "Please complete your information.")
+
+    dates = service_dates()
+    groups = []
+    grand_total = 0
+
+    for ci, (category, items) in enumerate(MENU.items()):
+        details = []
+        subtotal = 0
+
+        for ii, item in enumerate(items):
+            key = f"{ci}_{ii}"
+
+            try:
+                qty = int(request.form.get(f"qty_{key}", 0))
+            except ValueError:
+                abort(400)
+
+            if qty < 0 or qty > 10:
+                abort(400)
+
+            if qty == 0:
+                continue
+
+            extra = request.form.get(f"extra_{key}", "")
+
+            if extra and extra not in PROTEINS[category]:
+                abort(400)
+
+            price = item["price"] + (5 if extra else 0)
+            subtotal += price * qty
+
+            description = f"{qty} × {item['name']}"
+
+            if extra:
+                description += f" (+ extra {extra} per bowl)"
+
+            details.append(description)
+
+        if details:
+            groups.append({
+                "category": category,
+                "date": dates[category].isoformat(),
+                "details": details,
+                "subtotal": subtotal
+            })
+            grand_total += subtotal
+
+    if not groups:
+        abort(400, "Please select at least one bowl.")
 
     with db() as conn:
-        cursor = conn.execute("""
-            INSERT INTO orders
-            (created, name, phone, items, total, payment, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            datetime.now().isoformat(timespec="minutes"),
-            name, phone, json.dumps(items), total * 100,
-            payment, notes
-        ))
+        for group in groups:
+            conn.execute("""
+                INSERT INTO weekly_orders
+                (name, phone, details, notes, payment,
+                 total, service_date, menu_day, created)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                name, phone,
+                json.dumps(group["details"], ensure_ascii=False),
+                notes, payment, group["subtotal"],
+                group["date"], group["category"],
+                datetime.now().isoformat()
+            ))
 
-        session["last_order"] = cursor.lastrowid
+    session["confirmation"] = {
+        "name": name,
+        "groups": groups,
+        "total": grand_total,
+        "payment": payment
+    }
 
-    return redirect("/confirmation")
+    return redirect(url_for("confirmation"))
 
 @app.route("/confirmation")
 def confirmation():
-    with db() as conn:
-        order = conn.execute(
-            "SELECT * FROM orders WHERE id=?",
-            (session.get("last_order"),)
-        ).fetchone()
+    info = session.get("confirmation")
 
-    if not order:
-        return redirect("/")
+    if not info:
+        return redirect(url_for("home"))
 
     return page("""
-        <div class="card center">
-            <h2>Thank You!</h2>
-            <p>Your order has been received.</p>
+    <section class="card">
+    <div style="text-align:center">
+    <h2>Order received! ♡</h2>
+    <p>Thank you, {{ info.name }}!</p>
+    </div>
 
-            <p>Order #{{order.id}}</p>
+    {% for group in info.groups %}
+    <div class="order">
+    <h3>{{ group.category }}</h3>
+    <p>Service date: {{ group.date }}</p>
+    {% for item in group.details %}
+    <div>{{ item }}</div>
+    {% endfor %}
+    <p><strong>${{ "%.2f"|format(group.subtotal) }}</strong></p>
+    </div>
+    {% endfor %}
 
-            <div class="total">
-                ${{"%.2f"|format(order.total / 100)}}
-            </div>
+    <h3>Total: ${{ "%.2f"|format(info.total) }}</h3>
+    <p>Payment method: {{ info.payment }}</p>
+    <p><strong>{{ payment_details }}</strong></p>
+    <p>For delivery, please text {{ phone }}.</p>
+    <a class="button" href="/">Back to Menu</a>
+    </section>
+    """, info=info,
+        payment_details=PAYMENTS[info["payment"]],
+        phone=PHONE)
 
-            <h3>{{order.payment}}</h3>
-            <p>{{handle}}</p>
-
-            <p class="description">
-                Payment is not automatically processed.
-            </p>
-
-            <p>
-                For delivery, please text
-                <a href="sms:9123270026">{{phone}}</a>.
-            </p>
-
-            <a class="button" href="/">Back to Menu</a>
-        </div>
-    """, order=order, handle=PAYMENTS[order["payment"]], phone=PHONE)
-
-@app.route("/feedback", methods=["GET", "POST"])
-def feedback():
-    if request.method == "POST":
-        message = request.form.get("message", "").strip()[:2000]
-        rating = request.form.get("rating", "")
-
-        if not message or rating not in ["1", "2", "3", "4", "5"]:
-            abort(400)
-
-        with db() as conn:
-            conn.execute("""
-                INSERT INTO feedback
-                (created, name, rating, message)
-                VALUES (?, ?, ?, ?)
-            """, (
-                datetime.now().isoformat(timespec="minutes"),
-                request.form.get("name", "")[:100],
-                rating, message
-            ))
-
-        return redirect("/feedback?thanks=1")
-
-    return page("""
-        <h2>Feedback</h2>
-
-        {% if thanks %}
-            <div class="card center">
-                <h3>Thank you!</h3>
-                <p>We appreciate your feedback.</p>
-                <a class="button" href="/">Back to Menu</a>
-            </div>
-        {% else %}
-            <p class="center description">
-                We'd love to hear what you think.
-            </p>
-
-            <form method="post" class="card">
-                <input type="hidden" name="csrf" value="{{csrf()}}">
-
-                <label>
-                    Name (optional)
-                    <input name="name" maxlength="100">
-                </label>
-
-                <label>
-                    Rating
-                    <select name="rating">
-                        <option value="5">★★★★★ Excellent</option>
-                        <option value="4">★★★★ Very Good</option>
-                        <option value="3">★★★ Good</option>
-                        <option value="2">★★ Fair</option>
-                        <option value="1">★ Poor</option>
-                    </select>
-                </label>
-
-                <label>
-                    Your Feedback
-                    <textarea name="message" rows="5"
-                        maxlength="2000" required></textarea>
-                </label>
-
-                <button class="full">Submit Feedback</button>
-            </form>
-        {% endif %}
-    """, thanks=request.args.get("thanks"))
-
-def owner_required(func):
+def login_required(func):
     @wraps(func)
-    def wrapped(*args, **kwargs):
-        if not session.get("owner"):
-            return redirect("/login")
+    def wrapper(*args, **kwargs):
+        if not session.get("admin"):
+            return redirect(url_for("login"))
         return func(*args, **kwargs)
-    return wrapped
+    return wrapper
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = ""
 
     if request.method == "POST":
-        entered = request.form.get("password", "")
+        submitted = request.form.get("password", "")
 
-        if PASSWORD and hmac.compare_digest(
-            entered.encode(), PASSWORD.encode()
+        if DASHBOARD_PASSWORD and secrets.compare_digest(
+            submitted, DASHBOARD_PASSWORD
         ):
-            session.clear()
-            session["owner"] = True
-            return redirect("/dashboard")
+            session["admin"] = True
+            session["csrf"] = secrets.token_hex(24)
+            return redirect(url_for("dashboard"))
 
         error = "Incorrect password or password not configured."
 
     return page("""
-        <h2>Owner Login</h2>
-
-        <form method="post" class="card">
-            <input type="hidden" name="csrf" value="{{csrf()}}">
-
-            <label>
-                Password
-                <input type="password" name="password" required>
-            </label>
-
-            <p>{{error}}</p>
-
-            <button class="full">Log In</button>
-        </form>
+    <section class="card">
+    <h2>Admin Login</h2>
+    <p>{{ error }}</p>
+    <form method="POST">
+    <label>Password</label>
+    <input type="password" name="password" required>
+    <button>Log In</button>
+    </form>
+    </section>
     """, error=error)
 
-@app.route("/logout", methods=["POST"])
-def logout():
-    session.clear()
-    return redirect("/")
-
 @app.route("/dashboard")
-@owner_required
+@login_required
 def dashboard():
+    selected = request.args.get("day", "All")
+
     with db() as conn:
-        orders = [
-            dict(row) for row in conn.execute(
-                "SELECT * FROM orders ORDER BY id DESC"
-            )
-        ]
+        if selected in MENU:
+            rows = conn.execute("""
+                SELECT * FROM weekly_orders
+                WHERE menu_day=?
+                ORDER BY service_date, id DESC
+            """, (selected,)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT * FROM weekly_orders
+                ORDER BY service_date, id DESC
+            """).fetchall()
 
-        reviews = conn.execute(
-            "SELECT * FROM feedback ORDER BY id DESC"
-        ).fetchall()
+        feedback = conn.execute("""
+            SELECT * FROM weekly_feedback ORDER BY id DESC
+        """).fetchall()
 
-    for order in orders:
-        order["items"] = json.loads(order["items"])
+    orders = []
 
-    revenue = sum(o["total"] for o in orders if o["paid"]) / 100
+    for row in rows:
+        record = dict(row)
+        record["items"] = json.loads(record["details"])
+        orders.append(record)
+
+    revenue = sum(o["total"] for o in orders)
+    paid_total = sum(o["total"] for o in orders if o["paid"])
 
     return page("""
-        <h2>Owner Dashboard</h2>
+    <section class="card">
+    <h2>Order Dashboard</h2>
+    <p>
+    <a href="/dashboard">All Orders</a> ·
+    <a href="/dashboard?day=Hibachi+Tuesdays">Hibachi</a> ·
+    <a href="/dashboard?day=Poké+Thursdays">Poké</a>
+    </p>
+    <p>Orders: {{ orders|length }}</p>
+    <p>Order total: ${{ "%.2f"|format(revenue) }}</p>
+    <p>Collected: ${{ "%.2f"|format(paid_total) }}</p>
+    <a class="button" href="/export">Download Orders CSV</a>
+    </section>
 
-        <div class="card soft">
-            <div class="category">Paid Revenue</div>
-            <div class="total">${{"%.2f"|format(revenue)}}</div>
-            <p>{{orders|length}} total orders</p>
+    {% for o in orders %}
+    <section class="card">
+    <span class="tag">{{ o.menu_day }}</span>
+    <h3>{{ o.service_date }}</h3>
+    <strong>#{{ o.id }} — {{ o.name }}</strong>
+    <p>{{ o.phone }}</p>
+    {% for item in o["items"] %}
+    <div>{{ item }}</div>
+    {% endfor %}
+    <p>Notes: {{ o.notes or 'None' }}</p>
+    <p>{{ o.payment }} — ${{ "%.2f"|format(o.total) }}</p>
 
-            <div class="actions">
-                <a class="button" href="/dashboard/export">
-                    Download CSV
-                </a>
+    <div class="actions">
+    <form method="POST" action="/toggle/{{ o.id }}/paid">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button>{{ '✓ Paid' if o.paid else 'Mark Paid' }}</button>
+    </form>
 
-                <form action="/logout" method="post">
-                    <input type="hidden" name="csrf" value="{{csrf()}}">
-                    <button>Log Out</button>
-                </form>
-            </div>
-        </div>
+    <form method="POST" action="/toggle/{{ o.id }}/completed">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button>
+    {{ '✓ Completed' if o.completed else 'Mark Completed' }}
+    </button>
+    </form>
+    </div>
+    </section>
+    {% else %}
+    <p>No orders yet.</p>
+    {% endfor %}
 
-        <h2>Orders</h2>
+    <section class="card">
+    <h2>Feedback</h2>
+    {% for f in feedback %}
+    <div class="order">
+    <strong>{{ f.name or 'Anonymous' }}</strong>
+    <p>{{ f.message }}</p>
+    </div>
+    {% else %}
+    <p>No feedback yet.</p>
+    {% endfor %}
+    </section>
 
-        {% for order in orders %}
-            <div class="card">
-                <div class="line">
-                    <h3>#{{order.id}} — {{order.name}}</h3>
-                    <strong>${{"%.2f"|format(order.total / 100)}}</strong>
-                </div>
+    <form method="POST" action="/logout">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button>Log Out</button>
+    </form>
+    """, orders=orders, feedback=feedback,
+        revenue=revenue, paid_total=paid_total,
+        csrf=session["csrf"])
 
-                <p class="description">{{order.created}}</p>
-                <p>Phone: {{order.phone}}</p>
-                <p>Payment: {{order.payment}}</p>
+def check_csrf():
+    token = session.get("csrf", "")
+    submitted = request.form.get("csrf", "")
 
-                {% for item in order["items"] %}
-                    <p>
-                        {{item.qty}} × {{item.name}}
-                        {% if item.extra != "None" %}
-                            <br>Extra {{item.extra}} (+$5 each)
-                        {% endif %}
-                    </p>
-                {% endfor %}
+    if not token or not secrets.compare_digest(token, submitted):
+        abort(403)
 
-                <p>Notes: {{order.notes}}</p>
+@app.route("/toggle/<int:order_id>/<field>", methods=["POST"])
+@login_required
+def toggle(order_id, field):
+    check_csrf()
 
-                <p>
-                    <span class="badge">
-                        {{ "Paid" if order.paid else "Unpaid" }}
-                    </span>
-                    <span class="badge">
-                        {{ "Completed" if order.completed else "Pending" }}
-                    </span>
-                </p>
-
-                <div class="actions">
-
-                    <form method="post"
-                        action="/dashboard/{{order.id}}/paid">
-                        <input type="hidden" name="csrf" value="{{csrf()}}">
-                        <button>
-                            {{ "Mark Unpaid" if order.paid else "Mark Paid" }}
-                        </button>
-                    </form>
-
-                    <form method="post"
-                        action="/dashboard/{{order.id}}/completed">
-                        <input type="hidden" name="csrf" value="{{csrf()}}">
-                        <button>
-                            {{ "Reopen" if order.completed else "Complete" }}
-                        </button>
-                    </form>
-
-                </div>
-            </div>
-        {% else %}
-            <p class="center">No orders yet.</p>
-        {% endfor %}
-
-        <h2>Feedback</h2>
-
-        {% for review in reviews %}
-            <div class="card">
-                <strong>{{review.name or "Anonymous"}}</strong>
-                <p>{{review.rating}} / 5 stars</p>
-                <p>{{review.message}}</p>
-                <p class="description">{{review.created}}</p>
-            </div>
-        {% else %}
-            <p class="center">No feedback yet.</p>
-        {% endfor %}
-    """, orders=orders, reviews=reviews, revenue=revenue)
-
-@app.route("/dashboard/<int:order_id>/<field>", methods=["POST"])
-@owner_required
-def update_order(order_id, field):
-    if field not in ["paid", "completed"]:
+    if field not in ("paid", "completed"):
         abort(400)
 
     with db() as conn:
         conn.execute(
-            f"UPDATE orders SET {field}=1-{field} WHERE id=?",
+            f"UPDATE weekly_orders SET {field}=1-{field} WHERE id=?",
             (order_id,)
         )
 
-    return redirect("/dashboard")
+    return redirect(url_for("dashboard"))
 
-@app.route("/dashboard/export")
-@owner_required
-def export_orders():
+@app.route("/export")
+@login_required
+def export():
+    with db() as conn:
+        cursor = conn.execute("""
+            SELECT * FROM weekly_orders
+            ORDER BY service_date, id
+        """)
+        rows = cursor.fetchall()
+        headers = [column[0] for column in cursor.description]
+
     output = io.StringIO()
     writer = csv.writer(output)
+    writer.writerow(headers)
 
-    writer.writerow([
-        "ID", "Date", "Name", "Phone", "Items",
-        "Total", "Payment", "Notes", "Paid", "Completed"
-    ])
+    for row in rows:
+        values = []
 
-    with db() as conn:
-        for order in conn.execute(
-            "SELECT * FROM orders ORDER BY id DESC"
-        ):
-            values = list(order)
-            values[5] = f"{values[5] / 100:.2f}"
-            writer.writerow([
-                "'" + v if isinstance(v, str)
-                and v.startswith(("=", "+", "-", "@", "\t", "\r"))
-                else v for v in values
-            ])
+        for value in row:
+            if isinstance(value, str) and value.startswith(
+                ("=", "+", "-", "@", "\t", "\r")
+            ):
+                value = "'" + value
 
-    return Response(
-        output.getvalue(),
+            values.append(value)
+
+        writer.writerow(values)
+
+    return send_file(
+        io.BytesIO(output.getvalue().encode("utf-8-sig")),
         mimetype="text/csv",
-        headers={
-            "Content-Disposition": "attachment; filename=orders.csv"
-        }
+        as_attachment=True,
+        download_name="weekly_orders.csv"
     )
+
+@app.route("/feedback", methods=["GET", "POST"])
+def feedback():
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        message = request.form.get("message", "").strip()
+
+        if not message:
+            abort(400, "Please enter feedback.")
+
+        with db() as conn:
+            conn.execute("""
+                INSERT INTO weekly_feedback
+                (name, message, created)
+                VALUES (?, ?, ?)
+            """, (name, message, datetime.now().isoformat()))
+
+        return redirect(url_for("feedback_thanks"))
+
+    return page("""
+    <section class="card">
+    <h2>Feedback</h2>
+    <p>I'd love to hear what you think!</p>
+    <form method="POST">
+    <label>Name (optional)</label>
+    <input name="name">
+    <label>Your feedback</label>
+    <textarea name="message" required></textarea>
+    <button>Submit Feedback</button>
+    </form>
+    </section>
+    """)
+
+@app.route("/feedback/thanks")
+def feedback_thanks():
+    return page("""
+    <section class="card">
+    <h2>Thank you for your feedback! ♡</h2>
+    <a class="button" href="/">Back to Menu</a>
+    </section>
+    """)
+
+@app.route("/logout", methods=["POST"])
+@login_required
+def logout():
+    check_csrf()
+    session.clear()
+    return redirect(url_for("login"))
 
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000))
+        port=int(os.environ.get("PORT", 10000))
     )
