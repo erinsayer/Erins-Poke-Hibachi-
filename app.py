@@ -31,9 +31,9 @@ PAYMENTS = {
 
 MENU = {
     "Hibachi Tuesdays": [
-        {"name": "Teriyaki Chicken", "price": 15},
-        {"name": "Shrimp", "price": 16},
-        {"name": "Teriyaki Steak", "price": 17}
+        {"name": "Teriyaki Chicken", "price": 12},
+        {"name": "Shrimp", "price": 14},
+        {"name": "Teriyaki Steak", "price": 15}
     ],
     "Poké Thursdays": [
         {"name": "Teriyaki Salmon (Cooked)", "price": 16},
@@ -43,7 +43,7 @@ MENU = {
 
 DESCRIPTIONS = {
     "Hibachi Tuesdays": (
-        "Fried rice, broccoli, carrots, soy sauce "
+        "Your choice of meat, fried rice, soy sauce "
         "and white sauce."
     ),
     "Poké Thursdays": (
@@ -649,6 +649,9 @@ def dashboard():
         record["items"] = json.loads(record["details"])
         orders.append(record)
 
+    active_orders = [o for o in orders if not (o["paid"] and o["completed"])]
+    completed_orders = [o for o in orders if o["paid"] and o["completed"]]
+
     revenue = sum(o["total"] for o in orders)
     paid_total = sum(o["total"] for o in orders if o["paid"])
 
@@ -674,8 +677,14 @@ def dashboard():
     </a>
     </section>
 
-    {% for o in orders %}
+    {% macro order_card(o, collapsed=False) %}
     <section class="card">
+    {% if collapsed %}
+    <details>
+    <summary style="cursor:pointer; font-weight:bold; padding:5px 0;">
+    #{{ o.id }} — {{ o.name }} · ${{ "%.2f"|format(o.total) }} · {{ o.service_date }}
+    </summary>
+    {% endif %}
     <span class="tag">{{ o.menu_day }}</span>
     <h3>{{ o.service_date }}</h3>
     <strong>#{{ o.id }} — {{ o.name }}</strong>
@@ -709,9 +718,25 @@ def dashboard():
     <button style="background:#963b36">Delete Order</button>
     </form>
 
+    {% if collapsed %}
+    </details>
+    {% endif %}
     </section>
+    {% endmacro %}
+
+    <h2>Active Orders ({{ active_orders|length }})</h2>
+    {% for o in active_orders %}
+    {{ order_card(o) }}
     {% else %}
-    <p>No orders yet.</p>
+    <p>No active orders.</p>
+    {% endfor %}
+
+    <h2>Completed Orders ({{ completed_orders|length }})</h2>
+    <p class="muted">Paid and completed orders are saved here. Tap an order to view or reopen it.</p>
+    {% for o in completed_orders %}
+    {{ order_card(o, True) }}
+    {% else %}
+    <p>No completed orders yet.</p>
     {% endfor %}
 
     <section class="card">
@@ -730,7 +755,8 @@ def dashboard():
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <button>Log Out</button>
     </form>
-    """, orders=orders, feedback=feedback,
+    """, orders=orders, active_orders=active_orders,
+        completed_orders=completed_orders, feedback=feedback,
         revenue=revenue, paid_total=paid_total,
         csrf=session["csrf"])
 
